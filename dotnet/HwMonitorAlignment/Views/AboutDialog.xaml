@@ -1,0 +1,115 @@
+<Window x:Class="HwMonitorAlignment.Views.AboutDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="About HwMonitorAlignment"
+        Width="460" Height="320"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        Background="{StaticResource BackgroundBrush}"
+        WindowStyle="ToolWindow"
+        ShowInTaskbar="False">
+
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header area: icon placeholder + title + description -->
+        <Grid Grid.Row="0" Margin="0,0,0,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="80"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Icon placeholder -->
+            <Border Grid.Column="0"
+                    Width="64" Height="64"
+                    Background="#FF007ACC"
+                    CornerRadius="8"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center">
+                <TextBlock Text="HW"
+                           FontFamily="Segoe UI"
+                           FontSize="20"
+                           FontWeight="Bold"
+                           Foreground="White"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"/>
+            </Border>
+
+            <!-- Title + version + description -->
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="12,0,0,0">
+                <TextBlock Text="HwMonitorAlignment"
+                           FontFamily="Segoe UI"
+                           FontSize="18"
+                           FontWeight="Bold"
+                           Foreground="White"/>
+                <TextBlock Text="Version 1.0.0"
+                           FontFamily="Segoe UI"
+                           FontSize="12"
+                           Foreground="#FFA0A0A0"
+                           Margin="0,2,0,0"/>
+                <TextBlock Text="A tool to visually align multiple monitors"
+                           FontFamily="Segoe UI"
+                           FontSize="12"
+                           Foreground="#FFD0D0D0"
+                           TextWrapping="Wrap"
+                           Margin="0,6,0,0"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- Body: details -->
+        <StackPanel Grid.Row="1" VerticalAlignment="Top">
+            <Separator Margin="0,0,0,12" Background="#FF3F3F46"/>
+
+            <TextBlock FontFamily="Segoe UI"
+                       FontSize="12"
+                       Foreground="#FFD0D0D0"
+                       TextWrapping="Wrap"
+                       Margin="0,0,0,10">
+                Show full-screen alignment overlays on each monitor with reference lines,
+                use arrow keys to fine-tune positions, and apply changes with an automatic
+                15-second rollback safety window.
+            </TextBlock>
+
+            <!-- GitHub link -->
+            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                <TextBlock Text="Project website: "
+                           FontFamily="Segoe UI"
+                           FontSize="12"
+                           Foreground="#FFA0A0A0"/>
+                <TextBlock x:Name="TbGitHubLink"
+                           FontFamily="Segoe UI"
+                           FontSize="12"
+                           Foreground="#FF4FC3F7"
+                           Cursor="Hand"
+                           TextDecorations="Underline"
+                           Text="https://github.com/cruelkratos/HwMonitorAlignment"
+                           MouseLeftButtonDown="TbGitHubLink_MouseLeftButtonDown"/>
+            </StackPanel>
+
+            <Separator Margin="0,12,0,12" Background="#FF3F3F46"/>
+
+            <!-- Built with -->
+            <TextBlock Text=".NET 8 / WPF port"
+                       FontFamily="Segoe UI"
+                       FontSize="11"
+                       Foreground="#FF808080"/>
+            <TextBlock Text="Original Python version by the HwMonitorAlignment project"
+                       FontFamily="Segoe UI"
+                       FontSize="11"
+                       Foreground="#FF808080"
+                       Margin="0,2,0,0"/>
+        </StackPanel>
+
+        <!-- Close button -->
+        <Button Grid.Row="2"
+                Content="Close"
+                Style="{StaticResource DarkButtonStyle}"
+                HorizontalAlignment="Right"
+                Margin="0,12,0,0"
+                Click="BtnClose_Click"/>
+    </Grid>
+</Window>
