@@ -1,12 +1,14 @@
-using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using Windows.Devices.Display;
 using HwMonitorAlignment.Models;
 
 namespace HwMonitorAlignment.Win32;
 
 /// <summary>
 /// Encapsulates all Win32 monitor enumeration and display-settings logic.
+/// Friendly names are resolved via the WinRT Windows.Devices.Display.DisplayMonitor API
+/// (available on Windows 10 1809+). All other operations use Win32 P/Invoke directly.
 /// </summary>
 public static class DisplayBackend
 {
@@ -16,62 +18,50 @@ public static class DisplayBackend
 
     /// <summary>
     /// Enumerates all active monitors and returns a list of MonitorInfo objects.
-    /// Friendly names are fetched via QueryDisplayConfig; on failure the
-    /// DeviceString from DISPLAY_DEVICE is used as fallback.
     /// </summary>
     public static List<MonitorInfo> GetMonitors()
     {
-        // Step 1: build a map from monitor device path -> friendly name
-        var friendlyNames = TryGetFriendlyNames();
+        // Pre-fetch friendly names from WinRT; falls back gracefully if unavailable.
+        var friendlyNames = GetFriendlyNamesViaWinRT();
 
         var monitors = new List<MonitorInfo>();
-
         uint iDevNum = 0;
+
         while (iDevNum < 64)
         {
-            var dd = new DISPLAY_DEVICE();
-            dd.cb = (uint)Marshal.SizeOf<DISPLAY_DEVICE>();
-
+            var dd = new DISPLAY_DEVICE { cb = (uint)Marshal.SizeOf<DISPLAY_DEVICE>() };
             if (!NativeMethods.EnumDisplayDevices(null, iDevNum, ref dd, 0))
                 break;
 
             iDevNum++;
 
-            // Only active adapters
             if ((dd.StateFlags & NativeConstants.DISPLAY_DEVICE_ACTIVE) == 0)
                 continue;
 
-            // Get current settings for this adapter
-            var devMode = new DEVMODE();
-            devMode.dmSize = (ushort)Marshal.SizeOf<DEVMODE>();
+            var devMode = new DEVMODE { dmSize = (ushort)Marshal.SizeOf<DEVMODE>() };
             if (!NativeMethods.EnumDisplaySettings(dd.DeviceName, NativeConstants.ENUM_CURRENT_SETTINGS, ref devMode))
                 continue;
 
             bool isPrimary = (dd.StateFlags & NativeConstants.DISPLAY_DEVICE_PRIMARY_DEVICE) != 0;
 
-            // Try to get a friendly name by enumerating monitor devices attached to this adapter
-            string friendlyName = dd.DeviceString; // fallback to adapter name
-            string monitorDeviceId = "";
-
+            // Walk the monitor devices attached to this adapter to get the model ID.
+            string friendlyName = dd.DeviceString; // fallback: adapter description
             uint iMonNum = 0;
             while (iMonNum < 16)
             {
-                var ddMon = new DISPLAY_DEVICE();
-                ddMon.cb = (uint)Marshal.SizeOf<DISPLAY_DEVICE>();
+                var ddMon = new DISPLAY_DEVICE { cb = (uint)Marshal.SizeOf<DISPLAY_DEVICE>() };
                 if (!NativeMethods.EnumDisplayDevices(dd.DeviceName, iMonNum, ref ddMon, 1))
                     break;
 
                 iMonNum++;
 
-                // DISPLAY_DEVICE_ACTIVE for monitors = ATTACHED_TO_DESKTOP (0x1)
                 if ((ddMon.StateFlags & NativeConstants.DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) == 0)
                     continue;
 
-                monitorDeviceId = ddMon.DeviceID;
-
-                // Look up in friendly names map
-                if (!string.IsNullOrEmpty(monitorDeviceId) &&
-                    friendlyNames.TryGetValue(monitorDeviceId, out var fn) &&
+                // DeviceID format: "MONITOR\DELA0BA\{guid}\0001" — second segment is the model ID.
+                string modelId = ExtractModelId(ddMon.DeviceID);
+                if (!string.IsNullOrEmpty(modelId) &&
+                    friendlyNames.TryGetValue(modelId, out var fn) &&
                     !string.IsNullOrEmpty(fn))
                 {
                     friendlyName = fn;
@@ -80,28 +70,68 @@ public static class DisplayBackend
                 {
                     friendlyName = ddMon.DeviceString;
                 }
-                break; // only need the first active monitor on this adapter
+                break;
             }
 
-            var monitor = new MonitorInfo
+            monitors.Add(new MonitorInfo
             {
-                DeviceName   = dd.DeviceName,
-                AdapterName  = dd.DeviceString,
-                FriendlyName = friendlyName,
-                X            = devMode.dmPositionX,
-                Y            = devMode.dmPositionY,
-                Width        = (int)devMode.dmPelsWidth,
-                Height       = (int)devMode.dmPelsHeight,
-                Orientation  = devMode.dmDisplayOrientation,
-                IsPrimary    = isPrimary,
+                DeviceName      = dd.DeviceName,
+                AdapterName     = dd.DeviceString,
+                FriendlyName    = friendlyName,
+                X               = devMode.dmPositionX,
+                Y               = devMode.dmPositionY,
+                Width           = (int)devMode.dmPelsWidth,
+                Height          = (int)devMode.dmPelsHeight,
+                Orientation     = devMode.dmDisplayOrientation,
+                IsPrimary       = isPrimary,
                 OriginalDevMode = devMode,
                 CurrentDevMode  = devMode,
-            };
-
-            monitors.Add(monitor);
+            });
         }
 
         return monitors;
+    }
+
+    // ----------------------------------------------------------------
+    // Friendly-name lookup via Windows.Devices.Display.DisplayMonitor
+    // ----------------------------------------------------------------
+
+    /// <summary>
+    /// Returns a map of monitor model ID (e.g. "DELA0BA") → friendly display name
+    /// (e.g. "Dell U2720Q") using the WinRT DisplayMonitor API.
+    /// Returns an empty dictionary on any failure so callers can fall back gracefully.
+    /// </summary>
+    private static Dictionary<string, string> GetFriendlyNamesViaWinRT()
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            // Run on a thread-pool thread to avoid STA/WinRT async deadlock.
+            var winrtMonitors = Task.Run(async () =>
+                await DisplayMonitor.FindAllAsync()).GetAwaiter().GetResult();
+
+            foreach (var m in winrtMonitors)
+            {
+                if (string.IsNullOrEmpty(m.DisplayName)) continue;
+                // DeviceId format: "\\?\DISPLAY#DELA0BA#5&2abc#..." — second segment is the model ID.
+                string modelId = ExtractModelId(m.DeviceId);
+                if (!string.IsNullOrEmpty(modelId))
+                    result.TryAdd(modelId, m.DisplayName);
+            }
+        }
+        catch { /* Silently fall back to adapter names */ }
+        return result;
+    }
+
+    /// <summary>
+    /// Extracts the monitor model identifier from a device path.
+    /// Works for both "MONITOR\DELA0BA\..." and "\\?\DISPLAY#DELA0BA#..." formats.
+    /// </summary>
+    private static string ExtractModelId(string deviceId)
+    {
+        if (string.IsNullOrEmpty(deviceId)) return string.Empty;
+        var parts = deviceId.Split(new[] { '\\', '#' }, StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length >= 2 ? parts[1] : string.Empty;
     }
 
     // ----------------------------------------------------------------
@@ -153,58 +183,4 @@ public static class DisplayBackend
         return (x, y, width, height);
     }
 
-    // ----------------------------------------------------------------
-    // Friendly-name helpers via QueryDisplayConfig
-    // ----------------------------------------------------------------
-
-    /// <summary>
-    /// Returns a dictionary mapping monitor device path -> friendly name.
-    /// Returns an empty dictionary on any failure so callers can fall back gracefully.
-    /// </summary>
-    private static Dictionary<string, string> TryGetFriendlyNames()
-    {
-        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        try
-        {
-            int ret = NativeMethods.GetDisplayConfigBufferSizes(
-                NativeConstants.QDC_ONLY_ACTIVE_PATHS,
-                out uint pathCount,
-                out uint modeCount);
-
-            if (ret != 0 || pathCount == 0)
-                return result;
-
-            var paths = new DISPLAYCONFIG_PATH_INFO[pathCount];
-            var modes = new DISPLAYCONFIG_MODE_INFO[modeCount];
-
-            ret = NativeMethods.QueryDisplayConfig(
-                NativeConstants.QDC_ONLY_ACTIVE_PATHS,
-                ref pathCount, paths,
-                ref modeCount, modes,
-                IntPtr.Zero);
-
-            if (ret != 0)
-                return result;
-
-            foreach (var path in paths)
-            {
-                var targetName = new DISPLAYCONFIG_TARGET_DEVICE_NAME();
-                targetName.header.type       = NativeConstants.DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
-                targetName.header.size       = (uint)Marshal.SizeOf<DISPLAYCONFIG_TARGET_DEVICE_NAME>();
-                targetName.header.adapterId  = path.targetInfo.adapterId;
-                targetName.header.id         = path.targetInfo.id;
-
-                int infoRet = NativeMethods.DisplayConfigGetDeviceInfo(ref targetName);
-                if (infoRet == 0 && !string.IsNullOrEmpty(targetName.monitorDevicePath))
-                {
-                    result[targetName.monitorDevicePath] = targetName.monitorFriendlyDeviceName ?? "";
-                }
-            }
-        }
-        catch
-        {
-            // Silently ignore; callers use fallback names
-        }
-        return result;
-    }
 }
